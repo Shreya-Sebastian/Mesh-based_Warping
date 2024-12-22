@@ -49,7 +49,27 @@ inline T sampleBilinear(const Image<T>& image, const glm::vec2& pos_px)
     //   
 
 
-    return image.data[0]; // <-- Change this.
+    int x = static_cast<int>(pos_px.x);
+    int y = static_cast<int>(pos_px.y);
+    float fx = pos_px.x - x;
+    float fy = pos_px.y - y;
+
+    // Clamp coordinates to stay within the image bounds
+    int x1 = std::clamp(x, 0, image.width - 1);
+    int y1 = std::clamp(y, 0, image.height - 1);
+    int x2 = std::clamp(x + 1, 0, image.width - 1);
+    int y2 = std::clamp(y + 1, 0, image.height - 1);
+
+    // Get the four nearest pixels
+    auto& p11 = image.data[y1 * image.width + x1];
+    auto& p12 = image.data[y1 * image.width + x2];
+    auto& p21 = image.data[y2 * image.width + x1];
+    auto& p22 = image.data[y2 * image.width + x2];
+
+    // Bilinear interpolation
+    T result = (1 - fx) * (1 - fy) * p11 + fx * (1 - fy) * p12 + (1 - fx) * fy * p21 + fx * fy * p22;
+
+    return result;
 }
 
 
@@ -323,9 +343,11 @@ Mesh createWarpingGrid(const int width, const int height)
     // The order in memory is to be the same as for images (row after row).
     // 
     
-    //
-    //    YOUR CODE GOES HERE
-    //
+    for (int y = 0; y <= height; ++y) {
+        for (int x = 0; x <= width; ++x) {
+            vertices[y * (width + 1) + x] = glm::vec2(x, y);
+        }
+    }
 
     // Build index buffer.
     auto num_pixels = width * height;
@@ -355,9 +377,27 @@ Mesh createWarpingGrid(const int width, const int height)
     // The result should be a grid that fills an entire image and replaces each pixel with two small triangles.
     //
     
-    //
-    //    YOUR CODE GOES HERE
-    //
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            int base_index = y * (width + 1) + x; // Index of the top-left corner of the current pixel
+            int triangle_index = (y * width + x) * 2; // Index in the triangle list
+
+            // First triangle (top-left triangle)
+            triangles[triangle_index] = glm::ivec3(
+                base_index, // A
+                base_index + 1, // B
+                base_index + width + 2 // C
+            );
+
+            // Second triangle (bottom-right triangle)
+            triangles[triangle_index + 1] = glm::ivec3(
+                base_index, // A
+                base_index + width + 2, // C
+                base_index + width + 1 // D
+            );
+        }
+    }
+
     // Combine the vertex and index buffers into a mesh.
     return Mesh { std::move(vertices), std::move(triangles) };
 }
@@ -393,12 +433,26 @@ Mesh warpGrid(Mesh& grid, const ImageFloat& disparity, const float scaling_facto
     //
 
     // Here is an example use of the bilinear interpolation (using the provided function argument).
-    auto interpolated_value = sampleBilinear(disparity, glm::vec2(1.0f, 1.0f));
+    //auto interpolated_value = sampleBilinear(disparity, glm::vec2(1.0f, 1.0f));
     // Recommended test: For a 2x2 image it SHOULD return the mean of the 4 pixels.
     
-    //
-    //    YOUR CODE GOES HERE
-    //
+    for (size_t i = 0; i < grid.vertices.size(); ++i) {
+        float x = grid.vertices[i].x;
+        float y = grid.vertices[i].y;
+
+        // Ensure boundary vertices are not moved (left and right edges)
+        if (x <= EDGE_EPSILON || x >= disparity.width - EDGE_EPSILON) {
+            continue; // Skip warping for edge vertices
+        }
+
+        // Sample the disparity map at the vertex position
+        glm::vec2 pos(x, y);
+        float sampled_disparity = sampleBilinear(disparity, pos);
+
+        // Apply the disparity scaling factor to compute new x position
+        new_grid.vertices[i].x = x + scaling_factor * sampled_disparity;
+    }
+
 
 
 
@@ -457,10 +511,29 @@ ImageWithMask forwardWarpImage(const ImageRGB& src_image, const ImageFloat& src_
     // Note: Point(s) awarded for a correct and efficient parallel solution using OpenMP.
     //
     
-    //
-    //    YOUR CODE GOES HERE
-    //
+    for (int y = 0; y < src_image.height; ++y) {
+        for (int x = 0; x < src_image.width; ++x) {
+            int src_index = y * src_image.width + x;
+            float d = disparity.data[src_index] * warp_factor; // Apply warp factor to disparity
+            float src_z = src_depth.data[src_index];
 
+            // Calculate the new x coordinate after applying the disparity
+            int dst_x = std::round(x + d);
+            int dst_y = y; // The y coordinate remains unchanged
+
+            // Ensure the destination coordinates are within the image bounds
+            if (dst_x >= 0 && dst_x < src_image.width && dst_y >= 0 && dst_y < src_image.height) {
+                int dst_index = dst_y * src_image.width + dst_x;
+
+                // Depth test to resolve conflicts: only overwrite if the source depth is less than the current depth at the destination
+                if (src_z < dst_depth.data[dst_index]) {
+                    dst_image.data[dst_index] = src_image.data[src_index];
+                    dst_depth.data[dst_index] = src_z;
+                    dst_mask.data[dst_index] = 1.0f; // Mark this pixel as valid
+                }
+            }
+        }
+    }
 
     // Return the warped image.
     return ImageWithMask(dst_image, dst_mask);
@@ -484,7 +557,7 @@ ImageRGB inpaintHoles(const ImageWithMask& img, const int size)
 
     // Rule of thumb for gaussian's std dev.
     const float sigma = (size - 1) / 2 / 3.2f;
-
+    const int radius = size / 2;
     // The output is initialized by copy of the input.
     auto result = ImageRGB(img.image);
     
@@ -502,10 +575,56 @@ ImageRGB inpaintHoles(const ImageWithMask& img, const int size)
     // Notes:
     //   * Keep pixels with no valid neighbors unmodified.
 
-    //
-    //    YOUR CODE GOES HERE
-    //
-    
+    for (int y = 0; y < img.image.height; ++y) {
+        for (int x = 0; x < img.image.width; ++x) {
+            int idx = y * img.image.width + x;
+
+            // Skip valid pixels (mask >= 0.5)
+            if (img.mask.data[idx] >= 0.5) {
+                continue; // Keep the valid pixel unchanged
+            }
+
+            float sumWeights = 0.0f;
+            float rSum = 0.0f, gSum = 0.0f, bSum = 0.0f;
+            bool hasValidNeighbors = false;
+
+            // Check the neighborhood for valid pixels to apply the Gaussian filter
+            for (int dy = -radius; dy <= radius; ++dy) {
+                for (int dx = -radius; dx <= radius; ++dx) {
+                    int nx = x + dx;
+                    int ny = y + dy;
+
+                    // Ensure within image bounds
+                    if (nx >= 0 && nx < img.image.width && ny >= 0 && ny < img.image.height) {
+                        int neighborIdx = ny * img.image.width + nx;
+
+                        // Skip invalid neighbors (mask < 0.5)
+                        if (img.mask.data[neighborIdx] < 0.5) {
+                            continue;
+                        }
+
+                        hasValidNeighbors = true;
+                        float dist = sqrt(dx * dx + dy * dy);
+                        float weight = gauss(dist, sigma);
+
+                        rSum += weight * img.image.data[neighborIdx].r;
+                        gSum += weight * img.image.data[neighborIdx].g;
+                        bSum += weight * img.image.data[neighborIdx].b;
+                        sumWeights += weight;
+                    }
+                }
+            }
+
+            // Apply the filtered value if there are valid neighbors
+            if (hasValidNeighbors && sumWeights > 0) {
+                result.data[idx].r = static_cast<uint8_t>(rSum / sumWeights);
+                result.data[idx].g = static_cast<uint8_t>(gSum / sumWeights);
+                result.data[idx].b = static_cast<uint8_t>(bSum / sumWeights);
+            }
+            // Else, keep the pixel unchanged if no valid neighbors were found
+        }
+    }
+
 
     // Return inpainted image.
     return result;
@@ -622,12 +741,31 @@ ImageRGB createAnaglyph(const ImageRGB& image_left, const ImageRGB& image_right,
     //
 
     // Example: RGB->HSV->RGB should be approx identity.
-    auto rgb_orig = glm::vec3(0.2, 0.6, 0.4);
-    auto rgb_should_be_same = hsvToRgb(rgbToHsv(rgb_orig)); // expect rgb == rgb_2 (up to numerical precision)
+    //auto rgb_orig = glm::vec3(0.2, 0.6, 0.4);
+    //auto rgb_should_be_same = hsvToRgb(rgbToHsv(rgb_orig)); // expect rgb == rgb_2 (up to numerical precision)
 
-    //
-    //    YOUR CODE GOES HERE
-    //
+    for (int y = 0; y < image_left.height; ++y) {
+        for (int x = 0; x < image_left.width; ++x) {
+            int index = y * image_left.width + x;
+
+            // Convert RGB to HSV
+            glm::vec3 hsv_left = rgbToHsv(image_left.data[index]);
+            glm::vec3 hsv_right = rgbToHsv(image_right.data[index]);
+
+            // Scale the saturation
+            hsv_left.y *= saturation;
+            hsv_right.y *= saturation;
+
+            // Convert back to RGB
+            glm::vec3 rgb_left = hsvToRgb(hsv_left);
+            glm::vec3 rgb_right = hsvToRgb(hsv_right);
+
+            // Combine to form anaglyph
+            anaglyph.data[index].r = rgb_left.r;
+            anaglyph.data[index].g = rgb_right.g;
+            anaglyph.data[index].b = rgb_right.b;
+        }
+    }
 
     // Returns a single analgyph image.
     return anaglyph;
