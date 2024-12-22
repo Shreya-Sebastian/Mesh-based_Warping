@@ -437,23 +437,19 @@ Mesh warpGrid(Mesh& grid, const ImageFloat& disparity, const float scaling_facto
     // Recommended test: For a 2x2 image it SHOULD return the mean of the 4 pixels.
     
     for (size_t i = 0; i < grid.vertices.size(); ++i) {
-        float x = grid.vertices[i].x;
-        float y = grid.vertices[i].y;
+        glm::vec2& vertex = grid.vertices[i]; // Reference to directly modify the vertex
 
-        // Ensure boundary vertices are not moved (left and right edges)
-        if (x <= EDGE_EPSILON || x >= disparity.width - EDGE_EPSILON) {
-            continue; // Skip warping for edge vertices
+        // Skip vertices that are within EDGE_EPSILON of the image boundaries
+        if (vertex.x <= EDGE_EPSILON || vertex.x >= disparity.width - EDGE_EPSILON) {
+            continue;
         }
 
         // Sample the disparity map at the vertex position
-        glm::vec2 pos(x, y);
-        float sampled_disparity = sampleBilinear(disparity, pos);
+        float sampled_disparity = sampleBilinear(disparity, vertex);
 
-        // Apply the disparity scaling factor to compute new x position
-        new_grid.vertices[i].x = x + scaling_factor * sampled_disparity;
+        // Update the vertex position based on the sampled disparity and scaling factor
+        new_grid.vertices[i].x = vertex.x + scaling_factor * sampled_disparity;
     }
-
-
 
 
     return new_grid;
@@ -822,27 +818,27 @@ Mesh rotatedWarpGrid(Mesh& grid, const glm::vec2& center, const float& angle)
     // 2. Multiply each vertex by matrix T to get its new coordinates.
     //
 
-    //glm::mat3 translateToOrigin = glm::mat3(1.0f, 0.0f, 0.0f,
-    //    0.0f, 1.0f, 0.0f,
-    //    -center.x, -center.y, 1.0f);
-
-    //glm::mat3 rotate = glm::mat3(cos(angle * DEGREE2RADIANS), -sin(angle * DEGREE2RADIANS), 0.0f,
-    //    sin(angle * DEGREE2RADIANS), cos(angle * DEGREE2RADIANS), 0.0f,
-    //    0.0f, 0.0f, 1.0f);
-
-    //glm::mat3 translateBack = glm::mat3(1.0f, 0.0f, 0.0f,
-    //    0.0f, 1.0f, 0.0f,
-    //    center.x, center.y, 1.0f);
-
-    //glm::mat3 transform = translateBack * rotate * translateToOrigin; // Combine the transformations
-
-    //// Apply transformation to each vertex
-    //for (auto& vertex : new_grid.vertices) {
-    //    glm::vec3 pos = glm::vec3(vertex, 1.0f); // Convert to homogeneous coordinates for matrix multiplication
-    //    pos = transform * pos; // Apply the transformation matrix
-    //    vertex.x = pos.x;
-    //    vertex.y = pos.y;
-    //}
+    glm::mat3 translateToOrigin = glm::mat3(1.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f,
+        -center.x, -center.y, 1.0f);
+    
+    glm::mat3 rotate = glm::mat3(cos(angle * DEGREE2RADIANS), -sin(angle * DEGREE2RADIANS), 0.0f,
+        sin(angle * DEGREE2RADIANS), cos(angle * DEGREE2RADIANS), 0.0f,
+        0.0f, 0.0f, 1.0f);
+    
+    glm::mat3 translateBack = glm::mat3(1.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f,
+        center.x, center.y, 1.0f);
+    
+    glm::mat3 transform = translateBack * rotate * translateToOrigin; // Combine the transformations
+    
+    // Apply transformation to each vertex
+    for (auto& vertex : new_grid.vertices) {
+        glm::vec3 pos = glm::vec3(vertex, 1.0f); // Convert to homogeneous coordinates for matrix multiplication
+        pos = transform * pos; // Apply the transformation matrix
+        vertex.x = pos.x;
+        vertex.y = pos.y;
+    }
 
     return new_grid;
 }
@@ -865,32 +861,32 @@ ImageRGB rotateImage(const ImageRGB& image, const Mesh& src_grid, const Mesh& ds
     // Unused pixels should be black.
     // Pixel that fall outside of the image should be discarded.
     
-    //ImageRGB rotatedImage(image.width, image.height);
+    ImageRGB rotatedImage(image.width, image.height);
 
-    //// Ensure grids are correctly sized
-    //if (src_grid.vertices.size() != dst_grid.vertices.size()) {
-    //    throw std::invalid_argument("Source and destination grids must have the same number of vertices.");
-    //}
+    // Ensure grids are correctly sized
+    if (src_grid.vertices.size() != dst_grid.vertices.size()) {
+        throw std::invalid_argument("Source and destination grids must have the same number of vertices.");
+    }
 
-    //// Iterate over each vertex in the destination grid
-    //for (size_t i = 0; i < dst_grid.vertices.size(); ++i) {
-    //    // Get the corresponding source and destination vertices
-    //    glm::vec2 dst_pos = dst_grid.vertices[i];
-    //    glm::vec2 src_pos = src_grid.vertices[i];
+    // Iterate over each vertex in the destination grid
+    for (size_t i = 0; i < dst_grid.vertices.size(); ++i) {
+        // Get the corresponding source and destination vertices
+        glm::vec2 dst_pos = dst_grid.vertices[i];
+        glm::vec2 src_pos = src_grid.vertices[i];
 
-    //    // Check if the destination vertex position is within image bounds
-    //    if (dst_pos.x >= 0 && dst_pos.x < image.width && dst_pos.y >= 0 && dst_pos.y < image.height) {
-    //        // Sample the color from the source image using bilinear interpolation at the source vertex position
-    //        glm::vec3 color = sampleBilinearRGB(image, src_pos);
+        // Check if the destination vertex position is within image bounds
+        if (dst_pos.x >= 0 && dst_pos.x < image.width && dst_pos.y >= 0 && dst_pos.y < image.height) {
+            // Sample the color from the source image using bilinear interpolation at the source vertex position
+            glm::vec3 color = sampleBilinearRGB(image, src_pos);
 
-    //        // Set the color in the rotated image at the rounded destination position
-    //        int x = static_cast<int>(std::round(dst_pos.x));
-    //        int y = static_cast<int>(std::round(dst_pos.y));
-    //        if (x >= 0 && x < image.width && y >= 0 && y < image.height) {
-    //            rotatedImage.data[y * image.width + x] = color;
-    //        }
-    //    }
-    //}
+            // Set the color in the rotated image at the rounded destination position
+            int x = static_cast<int>(std::round(dst_pos.x));
+            int y = static_cast<int>(std::round(dst_pos.y));
+            if (x >= 0 && x < image.width && y >= 0 && y < image.height) {
+                rotatedImage.data[y * image.width + x] = color;
+            }
+        }
+    }
 
-    return ImageRGB(1, 1); // replace
+    return rotatedImage; 
 }
