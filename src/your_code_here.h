@@ -134,7 +134,7 @@ ImageFloat jointBilateralFilter(const ImageFloat& disparity, const ImageRGB& gui
         }
     }
 
-    //#pragma omp parallel for
+    #pragma omp parallel for
     for (auto i = 0; i < disparity.data.size(); i++) {
             
         int x = i % disparity.width;
@@ -578,52 +578,37 @@ ImageRGB inpaintHoles(const ImageWithMask& img, const int size)
     for (int y = 0; y < img.image.height; ++y) {
         for (int x = 0; x < img.image.width; ++x) {
             int idx = y * img.image.width + x;
-
-            // Skip valid pixels (mask >= 0.5)
-            if (img.mask.data[idx] >= 0.5) {
-                continue; // Keep the valid pixel unchanged
-            }
+            if (img.mask.data[idx] >= 0.5)
+                continue; // Skip valid pixels
 
             float sumWeights = 0.0f;
-            float rSum = 0.0f, gSum = 0.0f, bSum = 0.0f;
+            glm::vec3 sumColors(0.0f);
             bool hasValidNeighbors = false;
 
-            // Check the neighborhood for valid pixels to apply the Gaussian filter
             for (int dy = -radius; dy <= radius; ++dy) {
                 for (int dx = -radius; dx <= radius; ++dx) {
                     int nx = x + dx;
                     int ny = y + dy;
-
-                    // Ensure within image bounds
                     if (nx >= 0 && nx < img.image.width && ny >= 0 && ny < img.image.height) {
                         int neighborIdx = ny * img.image.width + nx;
-
-                        // Skip invalid neighbors (mask < 0.5)
-                        if (img.mask.data[neighborIdx] < 0.5) {
-                            continue;
-                        }
+                        if (img.mask.data[neighborIdx] < 0.5)
+                            continue; // Skip invalid neighbors
 
                         hasValidNeighbors = true;
-                        float dist = sqrt(dx * dx + dy * dy);
+                        float dist = std::sqrt(dx * dx + dy * dy);
                         float weight = gauss(dist, sigma);
-
-                        rSum += weight * img.image.data[neighborIdx].r;
-                        gSum += weight * img.image.data[neighborIdx].g;
-                        bSum += weight * img.image.data[neighborIdx].b;
                         sumWeights += weight;
+                        sumColors += weight * img.image.data[neighborIdx];
                     }
                 }
             }
 
-            // Apply the filtered value if there are valid neighbors
             if (hasValidNeighbors && sumWeights > 0) {
-                result.data[idx].r = static_cast<uint8_t>(rSum / sumWeights);
-                result.data[idx].g = static_cast<uint8_t>(gSum / sumWeights);
-                result.data[idx].b = static_cast<uint8_t>(bSum / sumWeights);
+                result.data[idx] = sumColors / sumWeights; // Normalize the weighted sum of colors
             }
-            // Else, keep the pixel unchanged if no valid neighbors were found
         }
     }
+
 
 
     // Return inpainted image.
@@ -702,9 +687,48 @@ ImageRGB backwardWarpImage(const ImageRGB& src_image, const ImageFloat& src_dept
     // Example of computing barycentric coordinates of a point [0.1, 0.2] inside a triangle.
     glm::vec3 bc = barycentricCoordinates(glm::vec2(0.1, 0.2), glm::vec2(0, 0), glm::vec2(1, 0), glm::vec2(0, 1));
 
-    //
-    //    YOUR CODE GOES HERE
-    //
+    for (size_t i = 0; i < dst_grid.triangles.size(); ++i) {
+        auto& triangle = dst_grid.triangles[i];
+        auto& src_triangle = src_grid.triangles[i];
+
+        // Get vertices of the triangle in destination grid
+        glm::vec2 dst_a = dst_grid.vertices[triangle.x];
+        glm::vec2 dst_b = dst_grid.vertices[triangle.y];
+        glm::vec2 dst_c = dst_grid.vertices[triangle.z];
+
+        // Get vertices of the corresponding triangle in source grid
+        glm::vec2 src_a = src_grid.vertices[src_triangle.x];
+        glm::vec2 src_b = src_grid.vertices[src_triangle.y];
+        glm::vec2 src_c = src_grid.vertices[src_triangle.z];
+
+        // Determine bounding box of the triangle in destination image
+        int minX = std::max(0, static_cast<int>(std::min({ dst_a.x, dst_b.x, dst_c.x })));
+        int maxX = std::min(src_image.width - 1, static_cast<int>(std::max({ dst_a.x, dst_b.x, dst_c.x })));
+        int minY = std::max(0, static_cast<int>(std::min({ dst_a.y, dst_b.y, dst_c.y })));
+        int maxY = std::min(src_image.height - 1, static_cast<int>(std::max({ dst_a.y, dst_b.y, dst_c.y })));
+
+        for (int y = minY; y <= maxY; ++y) {
+            for (int x = minX; x <= maxX; ++x) {
+                glm::vec2 pt(x + 0.5f, y + 0.5f); // Center of the pixel
+
+                if (isPointInsideTriangle(pt, dst_a, dst_b, dst_c)) {
+                    glm::vec3 bc = barycentricCoordinates(pt, dst_a, dst_b, dst_c);
+                    glm::vec2 pt_src = src_a * bc.x + src_b * bc.y + src_c * bc.z; // Reproject to source grid
+
+                    // Sample the color and depth from the source image
+                    glm::vec3 color = sampleBilinearRGB(src_image, pt_src);
+                    float depth = sampleBilinear(src_depth, pt_src);
+
+                    // Depth test
+                    if (depth < dst_depth.data[y * src_image.width + x]) {
+                        dst_image.data[y * src_image.width + x] = color;
+                        dst_depth.data[y * src_image.width + x] = depth;
+                    }
+                }
+            }
+        }
+    }
+
 
     // Return the warped image.
     return dst_image;
@@ -798,10 +822,27 @@ Mesh rotatedWarpGrid(Mesh& grid, const glm::vec2& center, const float& angle)
     // 2. Multiply each vertex by matrix T to get its new coordinates.
     //
 
-    //
-    //    YOUR CODE GOES HERE
-    //
+    //glm::mat3 translateToOrigin = glm::mat3(1.0f, 0.0f, 0.0f,
+    //    0.0f, 1.0f, 0.0f,
+    //    -center.x, -center.y, 1.0f);
 
+    //glm::mat3 rotate = glm::mat3(cos(angle * DEGREE2RADIANS), -sin(angle * DEGREE2RADIANS), 0.0f,
+    //    sin(angle * DEGREE2RADIANS), cos(angle * DEGREE2RADIANS), 0.0f,
+    //    0.0f, 0.0f, 1.0f);
+
+    //glm::mat3 translateBack = glm::mat3(1.0f, 0.0f, 0.0f,
+    //    0.0f, 1.0f, 0.0f,
+    //    center.x, center.y, 1.0f);
+
+    //glm::mat3 transform = translateBack * rotate * translateToOrigin; // Combine the transformations
+
+    //// Apply transformation to each vertex
+    //for (auto& vertex : new_grid.vertices) {
+    //    glm::vec3 pos = glm::vec3(vertex, 1.0f); // Convert to homogeneous coordinates for matrix multiplication
+    //    pos = transform * pos; // Apply the transformation matrix
+    //    vertex.x = pos.x;
+    //    vertex.y = pos.y;
+    //}
 
     return new_grid;
 }
@@ -823,8 +864,33 @@ ImageRGB rotateImage(const ImageRGB& image, const Mesh& src_grid, const Mesh& ds
     //
     // Unused pixels should be black.
     // Pixel that fall outside of the image should be discarded.
-    //
-    //    YOUR CODE GOES HERE
-    //
+    
+    //ImageRGB rotatedImage(image.width, image.height);
+
+    //// Ensure grids are correctly sized
+    //if (src_grid.vertices.size() != dst_grid.vertices.size()) {
+    //    throw std::invalid_argument("Source and destination grids must have the same number of vertices.");
+    //}
+
+    //// Iterate over each vertex in the destination grid
+    //for (size_t i = 0; i < dst_grid.vertices.size(); ++i) {
+    //    // Get the corresponding source and destination vertices
+    //    glm::vec2 dst_pos = dst_grid.vertices[i];
+    //    glm::vec2 src_pos = src_grid.vertices[i];
+
+    //    // Check if the destination vertex position is within image bounds
+    //    if (dst_pos.x >= 0 && dst_pos.x < image.width && dst_pos.y >= 0 && dst_pos.y < image.height) {
+    //        // Sample the color from the source image using bilinear interpolation at the source vertex position
+    //        glm::vec3 color = sampleBilinearRGB(image, src_pos);
+
+    //        // Set the color in the rotated image at the rounded destination position
+    //        int x = static_cast<int>(std::round(dst_pos.x));
+    //        int y = static_cast<int>(std::round(dst_pos.y));
+    //        if (x >= 0 && x < image.width && y >= 0 && y < image.height) {
+    //            rotatedImage.data[y * image.width + x] = color;
+    //        }
+    //    }
+    //}
+
     return ImageRGB(1, 1); // replace
 }
