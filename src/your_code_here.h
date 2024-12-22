@@ -46,11 +46,8 @@ inline T sampleBilinear(const Image<T>& image, const glm::vec2& pos_px)
     //    auto value = image.data[0] * 3; // both float and glm:vec3 support baisc operators
     //    T rounded_value = glm::round(image.data[0]); // glm::round will handle both glm::vec3 and float. 
     // Use glm API for further reference: https://glm.g-truc.net/0.9.9/api/a00241.html
-    // 
-    
-    //
-    //    YOUR CODE GOES HERE
-    //
+    //   
+
 
     return image.data[0]; // <-- Change this.
 }
@@ -80,6 +77,9 @@ ImageFloat jointBilateralFilter(const ImageFloat& disparity, const ImageRGB& gui
     // Rule of thumb for gaussian's std dev. 
     const float sigma = (size - 1) / 2 / 3.2f;
 
+    // Radius of the filter kernel.
+    const int radius = size / 2;
+
     // Empty output image.
     auto result = ImageFloat(disparity.width, disparity.height);
 
@@ -104,12 +104,77 @@ ImageFloat jointBilateralFilter(const ImageFloat& disparity, const ImageRGB& gui
     // Notes:
     //   * If a pixel has no neighbor (all were skipped), assign INVALID_VALUE to the output.  
     //   * One point awarded for a correct OpenMP parallelization.
+    // Precompute spatial Gaussian weights
+    std::vector<std::vector<float>> spatialWeights(size, std::vector<float>(size));
+    for (int i = -radius; i <= radius; i++) {
+        for (int j = -radius; j <= radius; j++) {
+            // Using squared Euclidean dist --> i * i + j * j
+            // Using Gaussian kernel
+            spatialWeights[i + radius][j + radius] = exp(-(i * i + j * j) / (2.0f * sigma * sigma));
+        }
+    }
 
-    //
-    //    YOUR CODE GOES HERE
-    //
+    //#pragma omp parallel for
+    for (auto i = 0; i < disparity.data.size(); i++) {
+            
+        int x = i % disparity.width;
+        int y = i / disparity.width;
+        
 
-    auto example = gauss(0.5f, 1.2f); // This is just an example of computing Normal pdf for x=0.5 and std.dev=1.2.
+        float K = 0.0f;
+        float filteredValue = 0.0f;
+        bool valid_neighbors = false;
+
+        glm::vec3 center_guide_value = guide.data[i];
+
+        //// Iterate through the kernel.
+        for (int dx = -radius; dx <= radius; ++dx) {
+            for (int dy = -radius; dy <= radius; ++dy) {
+                int nx = x + dx;
+                int ny = y + dy;
+
+                // Check if the neighbor is within the image bounds
+                if (nx >= 0 && nx < disparity.width && ny >= 0 && ny < disparity.height) {
+                    int neighbor_index = ny * disparity.width + nx;
+
+                    // Check if the disparity value is valid
+                    if (disparity.data[neighbor_index] != INVALID_VALUE) {
+                        valid_neighbors = true;
+
+                        glm::vec3 neighbor_guide_value = guide.data[neighbor_index];
+
+                        // Calculate the Euclidean distance in the guide image
+                        float diff_value = glm::distance(center_guide_value, neighbor_guide_value);
+
+                        // Spatial Gaussian weight (distance between the center pixel and the current pixel)
+                        float dist = sqrt(dx * dx + dy * dy);
+                        float spatial_weight = exp(-(dist * dist) / (2 * sigma * sigma));
+
+                        // Range Gaussian weight (difference in guide image values)
+                        float range_weight = exp(-(diff_value * diff_value) / (2 * guide_sigma * guide_sigma));
+
+                        // Combined weight
+                        float weight = spatial_weight * range_weight;
+
+                        // Accumulate weighted sum and the sum of weights
+                        filteredValue += weight * disparity.data[neighbor_index];
+                        K += weight;
+                    }
+                }
+            }
+        }
+
+        // If there were no valid neighbors, set the pixel to INVALID_VALUE
+        // Otherwise, set it to the normalized filtered value
+        if (valid_neighbors) {
+            result.data[i] = filteredValue / K;
+        } else {
+            result.data[i] = INVALID_VALUE;
+        }
+    }
+            
+
+    //auto example = gauss(0.5f, 1.2f); // This is just an example of computing Normal pdf for x=0.5 and std.dev=1.2.
 
 
     // Return filtered disparity.
