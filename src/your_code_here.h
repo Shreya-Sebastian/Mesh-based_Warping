@@ -189,18 +189,25 @@ ImageFloat jointBilateralFilter(const ImageFloat& disparity, const ImageRGB& gui
 /// <returns></returns>
 void normalizeValidValues(ImageFloat& scalar_image)
 {
-    //
-    // Find minimum and maximum among the VALID image values.
-    // Linearly rescale the VALID image values to the [0,1] range (in-place).
-    // The INVALID values remain INVALID (they are ignored).
-    // 
-    // Note #1: Pixel is INVALID as long as value == INVALID_VALUE.
-    // Note #2: This modified the input image in-place => no "return".
-    //
-    
-    //
-    //    YOUR CODE GOES HERE
-    //
+    float min_val = FLT_MAX;
+    float max_val = FLT_MIN;
+
+    // Find the min and max values ignoring INVALID_VALUE
+    for (auto val : scalar_image.data) {
+        if (val != INVALID_VALUE) {
+            if (val < min_val)
+                min_val = val;
+            if (val > max_val)
+                max_val = val;
+        }
+    }
+
+    // Rescale values to [0,1] range
+    for (auto& val : scalar_image.data) {
+        if (val != INVALID_VALUE) {
+            val = (val - min_val) / (max_val - min_val);
+        }
+    }
 }
 
 /// <summary>
@@ -220,9 +227,14 @@ ImageFloat disparityToNormalizedDepth(const ImageFloat& disparity)
     // We guarantee that all valid disparities > 0.
     //
         
-    //
-    //    YOUR CODE GOES HERE
-    //
+    for (int i = 0; i < disparity.data.size(); i++) {
+        float d = disparity.data[i];
+        if (d == INVALID_VALUE) {
+            depth.data[i] = INVALID_VALUE;
+        } else {
+            depth.data[i] = 1.0f / d;
+        }
+    }
 
     // Rescales valid depth values to [0,1] range.
     normalizeValidValues(depth);
@@ -267,9 +279,19 @@ ImageFloat normalizedDepthToDisparity(
     //    * Invalid pixels (depth==INVALID_VALUE) are to be marked invalid on the output as well.
     //
     
-    //
-    //    YOUR CODE GOES HERE
-    //
+    for (int i = 0; i < depth.data.size(); i++) {
+        if (depth.data[i] == INVALID_VALUE) {
+            px_disparity.data[i] = INVALID_VALUE;
+        } else {
+            // Convert normalized depth to actual depth z
+            float normalizedDepth = depth.data[i];
+            float z = near_plane_mm + normalizedDepth * (far_plane_mm - near_plane_mm) - screen_distance_mm;
+
+            // Calculate pixel disparity
+            float disparity = (iod_mm / px_size_mm) * ( z/(screen_distance_mm + z));
+            px_disparity.data[i] = disparity;
+        }
+    }
 
     return px_disparity; // returns disparity measured in pixels
 }
